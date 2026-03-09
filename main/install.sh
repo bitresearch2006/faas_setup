@@ -1,188 +1,336 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# Copyright  Author(s) 2022
+set -euo pipefail
 
-set -e -x -o pipefail
+############################################
+# Configuration
+############################################
+OWNER="bitresearch2006"
+REPO="faasd"
+ARKADE="/usr/local/bin/arkade"
+CONTAINERD_VER="${CONTAINERD_VER:-1.7.27}"
+CNI_VERSION="v0.9.1"
 
-export OWNER="bitresearch2006"
-export REPO="faasd"
+TMP_DIR="/tmp/faasd-install"
 
-# On CentOS /usr/local/bin is not included in the PATH when using sudo. 
-# Running arkade with sudo on CentOS requires the full path
-# to the arkade binary. 
-export ARKADE=/usr/local/bin/arkade
+############################################
+# Utility functions
+############################################
+log() {
+  echo "[FAASD-INSTALL] $*"
+}
 
-# When running as a startup script (cloud-init), the HOME variable is not always set.
-# As it is required for arkade to properly download tools, 
-# set the variable to /usr/local so arkade will download binaries to /usr/local/.arkade
-if [ -z "${HOME}" ]; then
-  export HOME=/usr/local
-fi
-
-version=""
-
-echo "Finding latest version from GitHub"
-version=$(curl -sI https://github.com/$OWNER/$REPO/releases/latest | grep -i "location:" | awk -F"/" '{ printf "%s", $NF }' | tr -d '\r')
-echo "$version"
-
-if [ ! $version ]; then
-  echo "Failed while attempting to get latest version"
+fatal() {
+  echo "[ERROR] $*" >&2
   exit 1
-fi
+}
 
-SUDO=sudo
+cleanup() {
+  rm -rf "$TMP_DIR"
+}
+
+trap cleanup EXIT
+
+############################################
+# Detect sudo
+############################################
+SUDO="sudo"
 if [ "$(id -u)" -eq 0 ]; then
-  SUDO=
+  SUDO=""
 fi
 
+############################################
+# Detect latest release
+############################################
+get_latest_version() {
+  log "Fetching latest version from GitHub API"
+
+  version=$(curl -s https://api.github.com/repos/${OWNER}/${REPO}/releases/latest \
+    | grep tag_name \
+    | cut -d '"' -f4)
+
+  if [ -z "$version" ]; then
+    fatal "Unable to determine latest release version"
+  fi
+
+  echo "$version"
+}
+
+############################################
+# System validation
+############################################
 verify_system() {
 
   arch=$(uname -m)
-  if [ "$arch" == "armv7l" ]; then
-    fatal 'faasd requires a 64-bit Operating System, see: https://github.com/openfaas/faasd/issues/364'
+
+  if [ "$arch" = "armv7l" ]; then
+    fatal "faasd requires a 64-bit OS"
   fi
 
-  if ! [ -d /run/systemd ]; then
-    fatal 'Can not find systemd to use as a process supervisor for faasd'
+  if [ ! -d /run/systemd ]; then
+    fatal "systemd is required"
   fi
+
 }
 
-has_dnf() {
-  [ -n "$(command -v dnf)" ]
-}
-
-has_apt_get() {
-  [ -n "$(command -v apt-get)" ]
-}
-
-has_pacman() {
-  [ -n "$(command -v pacman)" ]
+############################################
+# Package manager detection
+############################################
+has_cmd() {
+  command -v "$1" >/dev/null 2>&1
 }
 
 install_required_packages() {
-  if $(has_apt_get); then
-    # Debian bullseye is missing iptables. Added to required packages
-    # to get it working in raspberry pi. No such known issues in
-    # other distros. Hence, adding only to this block.
-    # reference: https://github.com/openfaas/faasd/pull/237
+
+  log "Installing required packages"
+
+  if has_cmd apt-get; then
+
     $SUDO apt-get update -y
-    $SUDO apt-get install -y curl runc bridge-utils iptables
-  elif $(has_dnf); then
+
+    $SUDO apt-get install -y \
+      curl \
+      ca-certificates \
+      runc \
+      bridge-utils \
+      iptables
+
+  elif has_cmd dnf; then
+
     $SUDO dnf install -y \
       --allowerasing \
       --setopt=install_weak_deps=False \
       curl runc iptables-services bridge-utils
-  elif $(has_pacman); then
+
+  elif has_cmd pacman; then
+
     $SUDO pacman -Syy
-    $SUDO pacman -Sy curl runc bridge-utils
+    $SUDO pacman -Sy --noconfirm curl runc bridge-utils
+
   else
-    fatal "Could not find apt-get, dnf, or pacman. Cannot install dependencies on this OS."
-    exit 1
+
+    fatal "Unsupported OS package manager"
+
   fi
+
 }
 
-install_arkade(){
+############################################
+# Install arkade
+############################################
+install_arkade() {
+
+  if has_cmd arkade; then
+    log "Arkade already installed"
+    return
+  fi
+
+  log "Installing arkade"
+
   curl -sLS https://get.arkade.dev | $SUDO sh
-  arkade --help
+
 }
 
+############################################
+# Install CNI plugins
+############################################
 install_cni_plugins() {
-  cni_version=v0.9.1
-  $SUDO $ARKADE system install cni --version ${cni_version} --path /opt/cni/bin --progress=false
+
+  log "Installing CNI plugins"
+
+  $SUDO $ARKADE system install cni \
+    --version ${CNI_VERSION} \
+    --path /opt/cni/bin \
+    --progress=false
+
 }
 
+############################################
+# Install containerd
+############################################
 install_containerd() {
-  CONTAINERD_VER=1.7.27
-  $SUDO systemctl unmask containerd || :
 
-  arch=$(uname -m)
+  if systemctl is-active --quiet containerd; then
+    log "containerd already running"
+    return
+  fi
 
-  $SUDO $ARKADE system install containerd --systemd --version v${CONTAINERD_VER}  --progress=false
-  
-  sleep 5
+  log "Installing containerd"
+
+  $SUDO systemctl unmask containerd || true
+
+  $SUDO $ARKADE system install containerd \
+    --systemd \
+    --version v${CONTAINERD_VER} \
+    --progress=false
+
+  log "Waiting for containerd"
+
+  sleep 3
+
+  if ! systemctl is-active --quiet containerd; then
+    fatal "containerd failed to start"
+  fi
+
 }
 
+############################################
+# Install faas-cli
+############################################
+install_faas_cli() {
+
+  if has_cmd faas-cli; then
+    log "faas-cli already installed"
+    return
+  fi
+
+  log "Installing faas-cli"
+
+  $ARKADE get --progress=false faas-cli
+
+  $SUDO install -m 755 $HOME/.arkade/bin/faas-cli /usr/local/bin/
+
+}
+
+############################################
+# Install faasd
+############################################
 install_faasd() {
+
+  if has_cmd faasd; then
+    log "faasd already installed"
+    return
+  fi
+
+  version=$(get_latest_version)
+
+  log "Installing faasd $version"
+
+  mkdir -p "$TMP_DIR/hack"
+  cd "$TMP_DIR"
+
   arch=$(uname -m)
+
   case $arch in
-  x86_64 | amd64)
+
+  x86_64|amd64)
     suffix=""
     ;;
+
   aarch64)
-    suffix=-arm64
+    suffix="-arm64"
     ;;
+
   *)
-    echo "Unsupported architecture $arch"
-    exit 1
+    fatal "Unsupported architecture $arch"
     ;;
+
   esac
 
-  $SUDO curl -fSLs "https://github.com/$OWNER/$REPO/releases/download/${version}/faasd${suffix}" --output "/usr/local/bin/faasd"
-  $SUDO chmod a+x "/usr/local/bin/faasd"
+  $SUDO curl -fSL \
+    "https://github.com/${OWNER}/${REPO}/releases/download/${version}/faasd${suffix}" \
+    -o /usr/local/bin/faasd
 
-  mkdir -p /tmp/faasd-${version}-installation/hack
-  cd /tmp/faasd-${version}-installation
-  $SUDO curl -fSLs "https://raw.githubusercontent.com/$OWNER/$REPO/${version}/docker-compose.yaml" --output "docker-compose.yaml"
-  $SUDO curl -fSLs "https://raw.githubusercontent.com/$OWNER/$REPO/${version}/prometheus.yml" --output "prometheus.yml"
-  $SUDO curl -fSLs "https://raw.githubusercontent.com/$OWNER/$REPO/${version}/resolv.conf" --output "resolv.conf"
-  $SUDO curl -fSLs "https://raw.githubusercontent.com/$OWNER/$REPO/${version}/hack/faasd-provider.service" --output "hack/faasd-provider.service"
-  $SUDO curl -fSLs "https://raw.githubusercontent.com/$OWNER/$REPO/${version}/hack/faasd.service" --output "hack/faasd.service"
+  $SUDO chmod +x /usr/local/bin/faasd
+
+  curl -fSL \
+    "https://raw.githubusercontent.com/${OWNER}/${REPO}/${version}/docker-compose.yaml" \
+    -o docker-compose.yaml
+
+  curl -fSL \
+    "https://raw.githubusercontent.com/${OWNER}/${REPO}/${version}/prometheus.yml" \
+    -o prometheus.yml
+
+  curl -fSL \
+    "https://raw.githubusercontent.com/${OWNER}/${REPO}/${version}/resolv.conf" \
+    -o resolv.conf
+
+  curl -fSL \
+    "https://raw.githubusercontent.com/${OWNER}/${REPO}/${version}/hack/faasd-provider.service" \
+    -o hack/faasd-provider.service
+
+  curl -fSL \
+    "https://raw.githubusercontent.com/${OWNER}/${REPO}/${version}/hack/faasd.service" \
+    -o hack/faasd.service
+
   $SUDO /usr/local/bin/faasd install
+
 }
 
-install_caddy() {
-  if [ ! -z "${FAASD_DOMAIN}" ]; then
-    CADDY_VER=v2.4.3
-    arkade get --progress=false caddy -v ${CADDY_VER}
-    
-    # /usr/bin/caddy is specified in the upstream service file.
-    $SUDO install -m 755 $HOME/.arkade/bin/caddy /usr/bin/caddy
 
-    $SUDO curl -fSLs https://raw.githubusercontent.com/caddyserver/dist/master/init/caddy.service --output /etc/systemd/system/caddy.service
+############################################
+# Install docker
+############################################
+install_docker() {
 
-    $SUDO mkdir -p /etc/caddy
-    $SUDO mkdir -p /var/lib/caddy
-    
-    if $(id caddy >/dev/null 2>&1); then
-      echo "User caddy already exists."
-    else
-      $SUDO useradd --system --home /var/lib/caddy --shell /bin/false caddy
-    fi
-
-    $SUDO tee /etc/caddy/Caddyfile >/dev/null <<EOF
-{
-  email "${LETSENCRYPT_EMAIL}"
-}
-
-${FAASD_DOMAIN} {
-  reverse_proxy 127.0.0.1:8080
-}
-EOF
-
-    $SUDO chown --recursive caddy:caddy /var/lib/caddy
-    $SUDO chown --recursive caddy:caddy /etc/caddy
-
-    $SUDO systemctl enable caddy
-    $SUDO systemctl start caddy
-  else
-    echo "Skipping caddy installation as FAASD_DOMAIN."
+  if has_cmd docker; then
+    log "Docker already installed"
+    return
   fi
+
+  log "Installing docker.io"
+
+  $SUDO apt-get update
+  $SUDO apt-get install -y docker.io
+
+  $SUDO systemctl enable docker
+  $SUDO systemctl start docker
+
+  $SUDO usermod -aG docker $USER
+
+  log "Docker installation completed"
+
 }
 
-install_faas_cli() {
-  arkade get --progress=false faas-cli
-  $SUDO install -m 755 $HOME/.arkade/bin/faas-cli /usr/local/bin/
+############################################
+# set docker registery to run in locahost
+############################################
+set_docker_registry() {
+
+  if docker ps -a --format '{{.Names}}' | grep -q '^registry$'; then
+    log "Docker registry already exists"
+    return
+  fi
+
+  log "Starting local Docker registry"
+
+  $SUDO docker run -d \
+    -p 5000:5000 \
+    --restart=always \
+    --name registry \
+    registry:2
 }
 
-verify_system
-install_required_packages
+############################################
+# Main
+############################################
+main() {
 
-$SUDO /sbin/sysctl -w net.ipv4.conf.all.forwarding=1
-echo "net.ipv4.conf.all.forwarding=1" | $SUDO tee -a /etc/sysctl.conf
+  verify_system
 
-install_arkade
-install_cni_plugins
-install_containerd
-install_faas_cli
-install_faasd
-install_caddy
+  install_required_packages
+
+  $SUDO sysctl -w net.ipv4.conf.all.forwarding=1
+
+  grep -q "net.ipv4.conf.all.forwarding=1" /etc/sysctl.conf || \
+  echo "net.ipv4.conf.all.forwarding=1" | $SUDO tee -a /etc/sysctl.conf
+
+  install_arkade
+
+  install_cni_plugins
+
+  install_containerd
+
+  install_faas_cli
+
+  install_faasd
+  
+  install_docker
+  
+  set_docker_registry
+
+  log "Installation completed successfully"
+
+}
+
+main
