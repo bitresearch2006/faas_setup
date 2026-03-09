@@ -67,25 +67,35 @@ sudo rm -f /usr/local/bin/arkade
 echo "Removing Docker registry..."
 
 if sudo docker ps -a --format '{{.Names}}' | grep -q '^registry$'; then
-  sudo docker stop registry || true
-  sudo docker rm registry || true
+  sudo docker rm -f registry || true
 fi
 
 ############################################
 # Remove Docker
 ############################################
-echo "Removing Docker..."
+echo "🧹 Removing Docker..."
 
 sudo systemctl stop docker 2>/dev/null || true
 sudo systemctl disable docker 2>/dev/null || true
 sudo systemctl stop docker.socket 2>/dev/null || true
 sudo systemctl disable docker.socket 2>/dev/null || true
 
-sudo apt purge -y docker.io docker-ce docker-ce-cli containerd.io || true
-sudo apt autoremove -y
+# Remove registry container
+sudo docker rm -f registry 2>/dev/null || true
 
+# Kill docker daemon if still running
+sudo pkill -f dockerd 2>/dev/null || true
+
+# Unmount docker overlay mounts
+sudo umount -l /var/lib/docker/overlay2/*/merged 2>/dev/null || true
+
+# Remove docker data
 sudo rm -rf /var/lib/docker
 sudo rm -rf /etc/docker
+
+# Remove docker package
+sudo apt purge -y docker.io 2>/dev/null || true
+sudo apt autoremove -y
 
 ############################################
 # Remove docker group membership
