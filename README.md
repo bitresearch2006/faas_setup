@@ -26,6 +26,39 @@ First, download the repository to your server:
 ```bash
 git clone [https://github.com/bitresearch2006/faasd.git](https://github.com/bitresearch2006/faasd.git)
 cd faasd
+
+## Docker Installation
+
+Docker is required to run containerized services and the local registry used in the FaaS setup.
+
+(i) Install Docker
+sudo apt-get update
+sudo apt-get install -y docker.io
+
+(ii) Enable and Start Docker
+sudo systemctl enable docker
+sudo systemctl start docker
+
+(iii) Add User to Docker Group
+
+This allows running Docker without sudo.
+
+sudo usermod -aG docker $USER
+
+Log out and log in again for the changes to take effect.
+
+(iv) Start Local Docker Registry
+sudo docker run -d \
+  -p 5000:5000 \
+  --restart=always \
+  --name registry \
+  registry:2
+
+(v) Verify running containers:
+docker ps
+
+#If the registry container appears, Docker has been installed successfully.
+
 chmod +x install.sh
 2. Run the Installer
 Choose one of the two methods below depending on your needs.
