@@ -81,6 +81,29 @@ install_required_packages() {
   fi
 }
 
+install_docker() {
+
+  echo "Installing Docker..."
+
+  sudo apt-get update
+  sudo apt-get install -y docker.io
+
+  sudo systemctl enable docker
+  sudo systemctl start docker
+
+  sudo usermod -aG docker $USER
+
+  echo "Docker installed successfully."
+
+  echo "Starting local Docker registry..."
+
+  sudo docker run -d \
+    -p 5000:5000 \
+    --restart=always \
+    --name registry \
+    registry:2
+}
+
 install_arkade(){
   curl -sLS https://get.arkade.dev | $SUDO sh
   arkade --help
@@ -176,6 +199,7 @@ install_faas_cli() {
 
 verify_system
 install_required_packages
+install_docker
 
 $SUDO /sbin/sysctl -w net.ipv4.conf.all.forwarding=1
 echo "net.ipv4.conf.all.forwarding=1" | $SUDO tee -a /etc/sysctl.conf
