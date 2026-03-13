@@ -270,6 +270,7 @@ enable_services() {
 verify_system
 install_required_packages
 install_docker
+install_registry
 enable_ip_forward
 install_arkade
 install_cni_plugins
