@@ -1,78 +1,200 @@
 # faasd - Lightweight Serverless Setup (bitresearch2006 Edition)
 
-This repository contains a custom installer and configuration for **faasd**, a lightweight implementation of OpenFaaS that uses `containerd` directly instead of Kubernetes. This setup is optimized for single-node deployments, making it ideal for low-cost VPS or edge devices like Raspberry Pi.
+This repository provides an automated installer for **faasd**, a lightweight serverless platform based on OpenFaaS that runs directly on **containerd** without Kubernetes.
 
-## Features of this Setup
+This setup also installs **Docker and a local Docker registry** to simplify building and deploying functions.
 
-* **Lightweight:** Removes the overhead of Kubernetes; runs directly on `containerd`.
-* **Multi-Arch:** Supports both **x86_64** (Standard Servers) and **arm64** (Raspberry Pi 3/4).
-* **Automated Networking:** Sets up CNI plugins and bridge networking automatically.
-* **HTTPS Ready:** Includes optional automatic SSL termination using Caddy.
-* **Tooling:** Automatically installs the `faas-cli` client.
+The installer is designed for **single-node deployments**, making it ideal for:
 
-## Prerequisites
+- Development environments
+- Edge devices
+- Small VPS servers
+- Raspberry Pi
 
-Before running the installation script, ensure your system meets the following requirements:
+---
 
-* **OS:** Ubuntu 20.04/22.04, Debian 10/11, CentOS 7/8, or Arch Linux.
-* **Permissions:** You must have root access (`sudo`).
-* **Ports:** Ensure ports `80` and `443` (for Caddy) and `8080` (for OpenFaaS gateway) are open.
+# Features
 
-## Installation
+This setup automatically installs and configures:
 
-### 1. Clone the Repository
-First, download the repository to your server:
+- **faasd** (OpenFaaS without Kubernetes)
+- **containerd** container runtime
+- **CNI networking plugins**
+- **faas-cli**
+- **Docker**
+- **Local Docker registry (localhost:5000)**
+
+Benefits:
+
+- Lightweight
+- No Kubernetes required
+- Supports **x86_64** and **ARM64**
+- Easy function deployment workflow
+- Automated installation
+
+---
+
+# Supported Platforms
+
+Tested on:
+
+- Ubuntu 20.04 / 22.04
+- Debian 11 / 12
+
+Architecture:
+
+- x86_64
+- ARM64 (Raspberry Pi 4 / 5)
+
+---
+
+# Requirements
+
+Before installing:
+
+- Root or sudo access
+- Internet connectivity
+- Ports available:
+
+| Port | Purpose |
+|-----|------|
+| 8080 | OpenFaaS gateway |
+| 5000 | Local Docker registry |
+
+---
+
+# Installation
+
+Clone the repository:
 
 ```bash
-git clone [https://github.com/bitresearch2006/faasd.git](https://github.com/bitresearch2006/faasd.git)
+git clone https://github.com/bitresearch2006/faasd.git
 cd faasd
 chmod +x install.sh
-2. Run the Installer
-Choose one of the two methods below depending on your needs.
 
-Option A: Standard Installation (HTTP only)
-Use this for local testing or if you do not have a domain name pointed to the server yet.
-
-Bash
+Run the installer:
 
 ./install.sh
-Option B: Production Installation (HTTPS with Caddy)
-Use this if you have a domain name (e.g., fns.example.com) pointed to your server's IP. This will install Caddy and automatically provision a Let's Encrypt SSL certificate.
 
-Replace the values below with your actual domain and email:
+The installer will automatically install:
 
-Bash
+arkade
 
-export FAASD_DOMAIN="fns.example.com"
-export LETSENCRYPT_EMAIL="admin@example.com"
+CNI plugins
 
-./install.sh
-Post-Installation
-Once the script finishes successfully, the OpenFaaS services will be running.
+containerd
 
-1. Retrieve your Password
-The installation generates a random secure password for the admin user. Retrieve it using:
+faas-cli
 
-Bash
+faasd
+
+Docker
+
+Docker registry
+
+After Installation
+Get the OpenFaaS password
+
+The installer creates a secure password.
+
+Retrieve it with:
 
 sudo cat /var/lib/faasd/secrets/basic-auth-password
-2. Login with faas-cli
-The faas-cli is installed automatically. Log in to your new server:
+Login using faas-cli
 
-Bash
+Set the OpenFaaS gateway:
 
-# If you used Option A (Standard)
-export OPENFAAS_URL=[http://127.0.0.1:8080](http://127.0.0.1:8080)
+export OPENFAAS_URL=http://127.0.0.1:8080
 
-# If you used Option B (HTTPS)
-export OPENFAAS_URL=[https://fns.example.com](https://fns.example.com)
+Login:
 
-# Login
 cat /var/lib/faasd/secrets/basic-auth-password | faas-cli login --password-stdin
-3. Verify Status
-Check that the core services are running:
+Verify Installation
 
-Bash
+Check services:
 
 sudo systemctl status faasd
 sudo systemctl status containerd
+sudo systemctl status docker
+
+You can also verify the registry:
+
+docker ps
+
+You should see:
+
+registry
+Deploying Functions
+
+Example workflow:
+
+Build function image
+docker build -t hello-function .
+Tag image for local registry
+docker tag hello-function localhost:5000/hello-function
+Push image to registry
+docker push localhost:5000/hello-function
+Deploy using faas-cli
+faas-cli deploy --image localhost:5000/hello-function
+Uninstall
+
+To remove everything installed by this repository:
+
+chmod +x uninstall.sh
+./uninstall.sh
+
+The uninstaller removes:
+
+faasd
+
+faas-cli
+
+containerd
+
+CNI plugins
+
+arkade
+
+Docker
+
+local Docker registry
+
+Source: 
+
+uninstall
+
+Architecture
+
+The installed platform looks like this:
+
+Developer
+   │
+   │ docker build
+   ▼
+Docker
+   │
+   │ docker push
+   ▼
+Local Registry (localhost:5000)
+   │
+   │ faas-cli deploy
+   ▼
+faasd
+   │
+containerd
+   │
+CNI networking
+Notes
+
+The Docker registry is ephemeral.
+
+If the container is removed, stored images will be lost.
+
+This is intentional to keep the environment lightweight.
+
+Repository
+
+GitHub:
+
+https://github.com/bitresearch2006/faasd
+
